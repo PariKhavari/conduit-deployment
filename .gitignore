@@ -1,0 +1,18 @@
+.env
+.env.local
+*.env
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Docker
+*.log
+
+# Alte/temporäre Dateien
+example-backend.Dockerfile

@@ -1,0 +1,59 @@
+services:
+  database:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    networks:
+      - backend-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./conduit-backend
+      dockerfile: Dockerfile
+    image: conduit-backend:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      database:
+        condition: service_healthy
+    volumes:
+      - backend-static:/app/staticfiles
+    networks:
+      - backend-net
+      - frontend-net
+    expose:
+      - "8000"
+
+  frontend:
+    build:
+      context: ./conduit-frontend
+      dockerfile: Dockerfile
+    image: conduit-frontend:latest
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-8282}:8080"
+    volumes:
+      - backend-static:/app/staticfiles:ro
+    networks:
+      - frontend-net
+
+networks:
+  frontend-net:
+  backend-net:
+
+volumes:
+  db-data:
+  backend-static:

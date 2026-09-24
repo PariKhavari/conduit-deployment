@@ -1,0 +1,40 @@
+name: Check open PR for feature branch
+
+on:
+  push:
+    branches-ignore:
+      - master
+  pull_request:
+    types: [opened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check-for-open-pr:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check if current branch has an open PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "Checking open PR for branch: $BRANCH_NAME"
+
+          PR_COUNT=$(gh pr list \
+            --repo "$REPO" \
+            --state open \
+            --head "$BRANCH_NAME" \
+            --json number \
+            --jq 'length')
+
+          if [ "$PR_COUNT" -eq 0 ]; then
+            echo "No open PR found for branch '$BRANCH_NAME'."
+            echo "Please create a pull request before submitting this branch."
+            exit 1
+          fi
+
+          echo "Open PR found for branch '$BRANCH_NAME'."
