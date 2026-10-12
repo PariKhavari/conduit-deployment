@@ -2,13 +2,12 @@ name: Build and Deploy
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
   DEPLOY_DIR: conduit
-
 
 jobs:
   build:
@@ -18,22 +17,23 @@ jobs:
       packages: write
     outputs:
       owner_lc: ${{ steps.owner.outputs.ghcr_owner }}
-  
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Install the cosign tool except on PR
-      # https://github.com/sigstore/cosign-installer
-      - name: Install cosign
-        if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20 #v3.5.0
+      - name: Set lowercase GHCR owner
+        id: owner
+        run: echo "ghcr_owner=${GITHUB_REPOSITORY_OWNER,,}" >> "${GITHUB_OUTPUT}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          cosign-release: 'v2.2.4'
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # Set up BuildKit Docker container builder to be able to build
       # multi-platform images and export cache
-      # https://github.com/docker/setup-buildx-action
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226 # v3.0.0
 
