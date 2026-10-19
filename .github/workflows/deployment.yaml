@@ -2,7 +2,7 @@ name: Build and Deploy
 
 on:
   push:
-    branches: [main, feature/deploy-job]
+    branches: [main, feat/ci-cd-pipeline]
   workflow_dispatch:
 
 env:
