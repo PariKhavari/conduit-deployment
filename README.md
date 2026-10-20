@@ -1,448 +1,207 @@
-# Conduit Deployment
+# Conduit Container
 
-Automated CI/CD deployment of the Conduit full-stack application (Django backend, Angular frontend, PostgreSQL) to a remote VM using GitHub Actions, GitHub Container Registry (GHCR) and Docker Compose.
+A fully containerized version of the **Conduit** application (a Medium.com clone), consisting of a Django REST Framework backend and an Angular frontend, orchestrated together with PostgreSQL via Docker Compose.
+
+> [!NOTE]
+> This guide describes how to run the Conduit containers manually.
+> For the automated CI/CD deployment via GitHub Actions, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Table of Contents
 
-- [Summary](#summary)
 - [Description](#description)
-  - [Repository Structure](#repository-structure)
-  - [How the Pipeline Works](#how-the-pipeline-works)
+- [Tech Stack](#tech-stack)
 - [Quickstart](#quickstart)
-  - [Prerequisites](#prerequisites)
-  - [Quickstart Guide](#quickstart-guide)
+- [Services & Images](#services--images)
+- [Docker Architecture](#docker-architecture)
 - [Usage](#usage)
-  - [1. Get Your Own Copy of the Repository](#1-get-your-own-copy-of-the-repository)
-  - [2. Prepare the VM](#2-prepare-the-vm)
-  - [3. Set Up SSH Access for GitHub Actions](#3-set-up-ssh-access-for-github-actions)
-  - [4. Create the Environment File](#4-create-the-environment-file)
-  - [5. Add GitHub Secrets](#5-add-github-secrets)
-  - [6. Trigger the Deployment](#6-trigger-the-deployment)
-  - [7. Verify the Deployment](#7-verify-the-deployment)
-  - [8. Configuration Reference](#8-configuration-reference)
-  - [9. Customizing the Setup](#9-customizing-the-setup)
-  - [10. Operating the Containers](#10-operating-the-containers)
-  - [11. Logs](#11-logs)
-  - [12. Rollback](#12-rollback)
-  - [13. Troubleshooting](#13-troubleshooting)
-- [Security Notes](#security-notes)
-- [Extras](#extras)
-
----
-
-## Summary
-
-| What | How |
-|------|-----|
-| Build | GitHub Actions builds the backend and frontend images on a GitHub runner, never on the VM |
-| Registry | Images are pushed to GHCR, tagged with the commit SHA and `latest` |
-| Deploy | The workflow connects to the VM via SSH, copies `docker-compose.yaml` and `.env`, pulls the new images and starts them with `docker compose up -d` |
-| Trigger | Every push to `main`, or manually via **Run workflow** |
-| Result | The frontend is available at `http://<VM_IP>:8282` |
-| Failure | Any failing step stops the workflow with an error (`set -euo pipefail`) |
-
----
+  - [Environment Variables](#environment-variables)
+  - [Configuration & Customization](#configuration--customization)
+  - [Superuser Creation](#superuser-creation)
+  - [Static Files](#static-files)
+- [Testing the Setup](#testing-the-setup)
+- [Logs](#logs)
+- [Known Limitations](#known-limitations)
+- [Notable Fixes](#notable-fixes)
 
 ## Description
 
-This repository contains a containerized version of the Conduit application and a GitHub Actions workflow that automates the full release process: build, push, deploy. It is meant as a reproducible template for deploying a multi-container application to a single VM without building anything on the server.
+This repository contains the full setup required to run the Conduit application entirely inside Docker containers. It bundles:
 
-### Repository Structure
+- `conduit-backend/` – a Django + Django REST Framework API server (Python), serving the application's data and the Django admin panel.
+- `conduit-frontend/` – an Angular single-page application, built and served through an nginx-unprivileged container, which also acts as a reverse proxy to the backend.
+- A PostgreSQL database container for persistent data storage.
 
-```
-.
-├── .github/
-│   └── workflows/
-│       └── deployment.yaml     # CI/CD workflow (build + deploy jobs)
-├── conduit-backend/            # Django REST API
-│   ├── Dockerfile              # Multi-stage build based on python:3.6-slim-buster
-│   ├── .dockerignore
-│   └── entrypoint.sh           # Prepares the Django app before Gunicorn starts
-├── conduit-frontend/           # Angular client
-│   ├── Dockerfile              # Multi-stage build: node:20-alpine -> nginx-unprivileged
-│   ├── .dockerignore
-│   └── nginx.conf
-├── docker-compose.yaml         # Services: database, backend, frontend
-├── .env.example                # Template for the runtime configuration
-├── .gitattributes              # Enforces LF line endings for shell scripts
-├── .gitignore
-└── README.md
-```
+The purpose of this repository is to demonstrate how an older, previously non-containerized full-stack project can be "modernized" into a reproducible, portable setup that can be started with a single command (`docker compose up -d`), without requiring any manual installation of Python, Node, or PostgreSQL on the host machine.
 
-### How the Pipeline Works
+## Tech Stack
 
-```
- push to main ──► build job (GitHub runner) ──► GHCR ──► deploy job ──SSH──► VM
-                  - build backend image                  - copy compose + .env
-                  - build frontend image                 - docker compose pull
-                  - push :<sha> and :latest              - docker compose up -d
-```
-
-1. **Build job:** checks out the code, logs in to GHCR with the automatic `GITHUB_TOKEN`, builds both images and pushes them.
-2. **Deploy job:** starts only if the build job succeeded (`needs: build`). It writes the SSH key from a secret, copies the Compose file and the `.env` file to the VM, logs in to GHCR on the VM, pulls the images for the current commit SHA and starts the containers in detached mode. Finally it removes unused images and deletes the SSH key from the runner.
-
-> [!NOTE]
-> The VM only pulls and runs ready-made images. All builds happen on GitHub runners.
-
----
+- **Frontend:** Angular 17, Node.js (build stage), nginx-unprivileged (runtime)
+- **Backend:** Python 3.6, Django, Django REST Framework, Gunicorn (WSGI server)
+- **Database:** PostgreSQL 15 (Alpine)
+- **Orchestration:** Docker, Docker Compose
 
 ## Quickstart
 
-### Prerequisites
+**Prerequisites:**
+- Docker and Docker Compose installed (Docker Engine 20+ recommended)
+- Git
 
-- GitHub account with your own fork of this repository (Actions and GHCR enabled)
-- Linux VM reachable via SSH with **Docker** and the **Docker Compose plugin**
-- Port `8282` open in the VM firewall
-- SSH key pair **without passphrase** (public key on the VM, private key in GitHub)
+**Steps:**
 
-### Quickstart Guide
+```bash
+# 1. Clone the repository
+git clone https://github.com/<your-username>/conduit-container-v2.git
+cd conduit-container-v2
 
-1. Fork this repository on GitHub and clone your fork:
+# 2. Create your local environment file from the example
+cp .env.example .env
 
-   ```bash
-   git clone https://github.com/PariKhavari/conduit-deployment.git
-   cd conduit-deployment
-   ```
+# 3. Edit .env and fill in real values (see "Environment Variables" below)
+nano .env
 
-2. Create a deploy key and install it on the VM:
+# 4. Build and start all containers
+docker compose up -d --build
 
-   ```bash
-   ssh-keygen -t ed25519 -f ~/.ssh/conduit_deploy -C "github-actions-deploy"
-   ssh-copy-id -i ~/.ssh/conduit_deploy.pub <USER>@<VM_IP>
-   ```
+# 5. Check that everything is running
+docker compose ps
+```
 
-3. Read the VM host key for the `SSH_KNOWN_HOSTS` secret:
+Once all three containers (`database`, `backend`, `frontend`) report as `Up` (and `healthy` once their healthchecks pass), the application is reachable at:
 
-   ```bash
-   ssh-keyscan <VM_IP>
-   ```
+```
+http://<host-ip>:8282
+```
 
-4. Create your runtime configuration and edit the values:
+A Django superuser is created automatically on first startup — see [Superuser Creation](#superuser-creation) below.
 
-   ```bash
-   cp .env.example .env
-   ```
+## Services & Images
 
-5. Add the secrets `SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY`, `SSH_KNOWN_HOSTS` and `ENV_FILE` in GitHub (see [5. Add GitHub Secrets](#5-add-github-secrets)).
-6. Push to `main` or click **Actions → Build and Deploy → Run workflow**.
-7. Open `http://<VM_IP>:8282`.
+| Service | Image | Tag | Notes |
+|---|---|---|---|
+| `database` | `postgres` | `15-alpine` | Official image, unmodified |
+| `backend` | `conduit-backend` | `latest` (locally built) | Built from `conduit-backend/Dockerfile` |
+| `frontend` | `conduit-frontend` | `latest` (locally built) | Built from `conduit-frontend/Dockerfile`, based on `nginxinc/nginx-unprivileged:1.25-alpine` |
 
----
+## Docker Architecture
+
+Both `Dockerfile`s use **multi-stage builds** to keep the final image size (and attack surface) as small as possible:
+
+- **Backend** (`conduit-backend/Dockerfile`):
+  - A shared `base` stage applies a one-time fix (redirecting Debian's package sources to the archive, since Debian Buster is EOL), used by both stages below so the fix isn't duplicated.
+  - Stage `builder` installs build tools (`build-essential`, `libpq-dev`) and compiles the Python dependencies from `requirements.txt` into an isolated `/install` folder.
+  - Stage `runtime` starts from `base`, copies **only** the already-installed packages (`COPY --from=builder /install /usr/local`) and the application code, and runs everything as a non-root user (`appuser`). None of the compiler tools from the `builder` stage end up in the final image.
+- **Frontend** (`conduit-frontend/Dockerfile`):
+  - Stage `build` uses Node.js to install dependencies (`npm ci`) and compile the Angular application into static production files.
+  - Stage `runtime` copies **only** the resulting static files (`COPY --from=build /app/dist/angular-conduit /usr/share/nginx/html`) into a lightweight, unprivileged nginx image. Node.js, `node_modules`, and the TypeScript source code never end up in the final image.
+
+This means the images shipped to production contain only what's needed to *run* the application, not what was needed to *build* it, resulting in smaller images and a reduced surface for potential vulnerabilities.
 
 ## Usage
 
-The following sections describe the complete setup in detail. Follow steps 1 to 7 in order when setting up a new VM. Sections 8 to 13 are reference material for configuration and operation.
+### Environment Variables
 
-### 1. Get Your Own Copy of the Repository
+All configuration is provided via a `.env` file at the project root (not committed to Git — see `.env.example` for the required keys). The most relevant variables:
 
-#### 1.1 Fork the repository
-
-Click **Fork** at the top right of the repository page on GitHub.
-
-#### 1.2 Clone your fork
-
-```bash
-git clone https://github.com/PariKhavari/conduit-deployment.git
-cd conduit-deployment
-```
-
-> [!IMPORTANT]
-> A plain clone of someone else's repository is not enough. Secrets, Actions runs and GHCR images belong to a GitHub repository, so you need your **own** repository (fork) to deploy.
-
-### 2. Prepare the VM
-
-#### 2.1 Install Docker and the Compose plugin
-
-```bash
-curl -fsSL https://get.docker.com | sh
-```
-
-#### 2.2 Allow your user to run Docker without `sudo`
-
-```bash
-sudo usermod -aG docker ${USER}
-```
-
-Log out and in again afterwards.
-
-#### 2.3 Check the installation
-
-```bash
-docker --version
-docker compose version
-```
-
-> [!IMPORTANT]
-> Port `8282` must be open in the firewall of your VM or cloud provider, otherwise the frontend is not reachable from the internet.
-
-### 3. Set Up SSH Access for GitHub Actions
-
-GitHub Actions logs in to the VM like a user with an SSH key.
+| Variable | Used by | Purpose |
+|---|---|---|
+| `FRONTEND_PORT` | frontend | Host port the application is published on (default `8282`) |
+| `POSTGRES_DB` | database, backend | Name of the Postgres database |
+| `POSTGRES_USER` | database, backend | Postgres username |
+| `POSTGRES_PASSWORD` | database, backend | Postgres password |
+| `POSTGRES_HOST` | backend | Hostname of the database service (default `database`, i.e. the Compose service name — only change this if connecting to an external database) |
+| `POSTGRES_PORT` | backend | Port the database listens on (default `5432`) |
+| `DJANGO_ALLOWED_HOSTS` | backend | Comma-separated list of hostnames/IPs Django will accept requests for |
+| `DJANGO_SUPERUSER_USERNAME` | backend | Username for the automatically created Django admin superuser |
+| `DJANGO_SUPERUSER_EMAIL` | backend | Email for the automatically created Django admin superuser |
+| `DJANGO_SUPERUSER_PASSWORD` | backend | Password for the automatically created Django admin superuser — see [Superuser Creation](#superuser-creation) below, this variable has special behavior |
 
 > [!WARNING]
-> Password login is not possible in the pipeline. The key must be created **without a passphrase**, otherwise the deploy job fails with `Permission denied`.
+> Avoid special characters such as `$`, `&`, or `*` in `POSTGRES_PASSWORD` or `DJANGO_SUPERUSER_PASSWORD`. Docker Compose interprets `$` as the start of a variable substitution, which can silently produce a different password than the one you intended (leading to authentication failures that are hard to diagnose). Stick to alphanumeric characters for these values.
 
-#### 3.1 Create a key pair on your local machine
+### Configuration & Customization
 
-Press Enter twice when asked for a passphrase:
+- **Changing the exposed port:** The frontend is published on port `8282` by default. This is configurable via the `FRONTEND_PORT` variable in `.env` — change it and recreate the frontend container:
+  ```bash
+  docker compose up -d --force-recreate frontend
+  ```
+- **Allowing a different host/IP:** If you deploy this to a different server, update `DJANGO_ALLOWED_HOSTS` in `.env` to include that server's IP address or domain name, then recreate the backend container:
+  ```bash
+  docker compose up -d --force-recreate backend
+  ```
+- **Database credentials:** Changing `POSTGRES_USER`, `POSTGRES_PASSWORD`, or `POSTGRES_DB` in `.env` only takes effect on a **fresh** database volume. If the `db-data` volume already exists, either remove it (`docker compose down -v`, which deletes all data) or manually update the credentials inside the running Postgres container.
+- **Rebuilding after code changes:** Since the backend and frontend are built from local Dockerfiles, any code change requires a rebuild:
+  ```bash
+  docker compose build backend frontend
+  docker compose up -d
+  ```
 
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/conduit_deploy -C "github-actions-deploy"
-```
+### Superuser Creation
 
-#### 3.2 Copy the public key to the VM
-
-```bash
-ssh-copy-id -i ~/.ssh/conduit_deploy.pub <USER>@<VM_IP>
-```
-
-> [!TIP]
-> Without `ssh-copy-id` (e.g. on Windows), log in to the VM and append the content of `conduit_deploy.pub` manually:
->
-> ```bash
-> mkdir -p ~/.ssh && chmod 700 ~/.ssh
-> echo "<CONTENT_OF_PUBLIC_KEY>" >> ~/.ssh/authorized_keys
-> chmod 600 ~/.ssh/authorized_keys
-> ```
-
-#### 3.3 Test the login
-
-It must work without a password:
-
-```bash
-ssh -i ~/.ssh/conduit_deploy <USER>@<VM_IP>
-```
-
-#### 3.4 Read the host key of the VM
-
-Needed for the `SSH_KNOWN_HOSTS` secret:
-
-```bash
-ssh-keyscan <VM_IP>
-```
-
-#### 3.5 Overview: where each key goes
-
-| Key | Where it goes |
-|-----|---------------|
-| Public key (`conduit_deploy.pub`) | VM: `~/.ssh/authorized_keys` of `SSH_USER` |
-| Private key (`conduit_deploy`) | GitHub secret `SSH_PRIVATE_KEY` |
-| Host key (output of `ssh-keyscan`) | GitHub secret `SSH_KNOWN_HOSTS` |
-
-> [!CAUTION]
-> Never commit the private key to the repository and never share it. It grants full access to the VM.
-
-### 4. Create the Environment File
-
-#### 4.1 Copy the template
-
-The file is never committed (`.gitignore`).
-
-```bash
-cp .env.example .env
-```
-
-#### 4.2 Fill in your values
-
-See [8.1 Environment Variables](#81-environment-variables-env) for all variables.
+A Django admin superuser is created **automatically** on container startup, based on the `DJANGO_SUPERUSER_USERNAME`, `DJANGO_SUPERUSER_EMAIL`, and `DJANGO_SUPERUSER_PASSWORD` values in `.env` — no manual command required.
 
 > [!IMPORTANT]
-> Add the VM IP to `DJANGO_ALLOWED_HOSTS` and `CORS_ORIGIN_WHITELIST` (e.g. `http://<VM_IP>:8282`), otherwise the frontend cannot load data.
-
-> [!WARNING]
-> Avoid `$`, `&` and `*` in passwords. They can break Docker Compose variable interpolation.
-
-#### 4.3 Generate a Django secret key
-
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(50))"
-```
-
-### 5. Add GitHub Secrets
-
-#### 5.1 Open the secrets page
-
-In your repository: **Settings → Secrets and variables → Actions → New repository secret**
-
-#### 5.2 Create the following secrets
-
-| Secret | Value |
-|--------|-------|
-| `SSH_HOST` | IP address or hostname of the VM (same as used for `ssh-keyscan`) |
-| `SSH_USER` | User on the VM that owns the public key |
-| `SSH_PRIVATE_KEY` | Full content of the private key, including the `-----BEGIN ...-----` and `-----END ...-----` lines |
-| `SSH_KNOWN_HOSTS` | Complete output of `ssh-keyscan <VM_IP>` |
-| `ENV_FILE` | Full content of your `.env` file |
-
-> [!IMPORTANT]
-> Paste the **content** of the private key, not its file name or path. GitHub has no access to your local machine.
-
-> [!NOTE]
-> `GITHUB_TOKEN` is created automatically by GitHub for every run and does not need to be added.
-
-### 6. Trigger the Deployment
-
-#### 6.1 Start the workflow
-
-- **Automatic:** push or merge into `main`.
-- **Manual:** **Actions → Build and Deploy → Run workflow**.
-
-> [!NOTE]
-> The **Run workflow** button only appears once the workflow file exists on `main`.
-
-#### 6.2 Follow the run
-
-Open the **Actions** tab. First the `build` job, then the `deploy` job must turn green.
-
-### 7. Verify the Deployment
-
-| Check | Command / Action |
-|-------|------------------|
-| Frontend reachable | Open `http://<VM_IP>:8282` in the browser |
-| Data is loaded | Navigate through articles, profiles and tags |
-| Containers running | `docker compose ps` on the VM (in `~/conduit`) |
-| Auto restart works | `docker kill <CONTAINER_NAME>`, then `docker compose ps` again |
-| Logs available | `docker compose logs -f backend` |
-
-### 8. Configuration Reference
-
-#### 8.1 Environment Variables (`.env`)
-
-| Variable | Description | Default / Example |
-|----------|-------------|-------------------|
-| `POSTGRES_DB` | Database name | `conduit` |
-| `POSTGRES_USER` | Database user | `conduit_user` |
-| `POSTGRES_PASSWORD` | Database password | `change_me` |
-| `POSTGRES_HOST` | Database host (Compose service name) | `database` |
-| `POSTGRES_PORT` | Database port | `5432` |
-| `DJANGO_SECRET_KEY` | Django secret key | `change_me` |
-| `DJANGO_DEBUG` | Debug mode | `false` |
-| `DJANGO_ALLOWED_HOSTS` | Allowed hostnames | `localhost,127.0.0.1,<VM_IP>` |
-| `DJANGO_SUPERUSER_USERNAME` | Admin username | `admin` |
-| `DJANGO_SUPERUSER_EMAIL` | Admin email | `admin@example.com` |
-| `DJANGO_SUPERUSER_PASSWORD` | Admin password | `change_me` |
-| `CORS_ORIGIN_ALLOW_ALL` | Allow all origins | `false` |
-| `CORS_ORIGIN_WHITELIST` | Allowed frontend origins | `http://<VM_IP>:8282` |
-| `FRONTEND_PORT` | Public port of the frontend | `8282` |
-| `GHCR_OWNER` | Lowercase GitHub owner of the images | `<github-user>` |
-| `IMAGE_TAG` | Image version to run | `latest` |
-
-#### 8.2 Workflow (`.github/workflows/deployment.yaml`)
-
-| Setting | Meaning | Default |
-|---------|---------|---------|
-| `on.push.branches` | Branches that trigger a deployment | `main` |
-| `REGISTRY` | Container registry | `ghcr.io` |
-| `DEPLOY_DIR` | Target folder on the VM (in the home of `SSH_USER`) | `conduit` |
-| `IMAGE_TAG` | Version deployed to the VM | `${{ github.sha }}` |
-
-#### 8.3 Services (`docker-compose.yaml`)
-
-| Service | Image | Port | Volume |
-|---------|-------|------|--------|
-| `database` | `postgres:15-alpine` | internal | `db-data` |
-| `backend` | `ghcr.io/${GHCR_OWNER}/conduit-backend:${IMAGE_TAG:-latest}` | `8000` (internal) | `backend-static` |
-| `frontend` | `ghcr.io/${GHCR_OWNER}/conduit-frontend:${IMAGE_TAG:-latest}` | `${FRONTEND_PORT:-8282}` → `8080` | `backend-static` (read-only) |
-
-> [!NOTE]
-> All services use `restart: unless-stopped`. The backend waits until the database health check (`pg_isready`) succeeds.
-
-### 9. Customizing the Setup
-
-| Goal | Change |
-|------|--------|
-| Use another public port | Set `FRONTEND_PORT` in `ENV_FILE` and update `CORS_ORIGIN_WHITELIST` |
-| Deploy to a new VM | Update `SSH_HOST`, `SSH_KNOWN_HOSTS`, the VM IP in `ENV_FILE` and install the public key on the new VM |
-| Deploy from another branch (e.g. for testing) | Add the branch to `on.push.branches` |
-| Change the deploy folder | Change `DEPLOY_DIR` in the workflow |
-| Change the number of Gunicorn workers | Edit `--workers 3` in the `CMD` of `conduit-backend/Dockerfile` |
-| Use another registry | Change `REGISTRY` and the login step in the workflow, and the image names in `docker-compose.yaml` |
+> The custom `UserManager.create_superuser()` method in this codebase (`conduit/apps/authentication/models.py`) always sets the password from the `DJANGO_SUPERUSER_PASSWORD` environment variable (if set and at least 4 characters long), falling back to the hardcoded password `securepass` otherwise. This is pre-existing application behavior, not something introduced by containerization.
 
 > [!TIP]
-> If you add a test branch to `on.push.branches`, remove it again before merging into `main`, so that only `main` deploys to the VM.
+> Login to the Django admin requires the **email address**, not the username, since the custom `User` model uses email as its `USERNAME_FIELD`.
 
-### 10. Operating the Containers
-
-On the VM:
+If you ever need to create an **additional** superuser manually:
 
 ```bash
-cd ~/conduit
-docker compose ps                # status of all services
-docker compose restart backend   # restart one service
-docker compose down              # stop all containers (data in volumes is kept)
-docker compose up -d             # start all containers in detached mode
+docker compose exec backend python manage.py createsuperuser
 ```
+
+### Static Files
+
+Backend static files (e.g. Django REST Framework's browsable API assets, admin panel CSS) are collected into a shared Docker volume (`backend-static`) at container startup and served by nginx under `/static/`. This is why the admin panel and browsable API render with correct styling even though Django itself doesn't serve static files in production.
+
+## Testing the Setup
+
+Before considering the deployment complete, the following was verified:
+
+- The frontend is reachable at `http://<host-ip>:8282`.
+- The backend runs via Gunicorn (a WSGI server), **not** Django's development server (`manage.py runserver`).
+- Navigating through the app (articles, tags, profiles) loads data correctly from the API.
+- Creating, favoriting, and viewing articles works correctly.
+- The Django admin panel is reachable and the superuser can log in.
+- Containers automatically restart after an internal crash, thanks to `restart: unless-stopped`.
+
+> [!NOTE]
+> This restart policy does **not** trigger on a manual `docker compose kill`/`stop`, since Docker treats that as an intentional stop, not a crash. A true crash (e.g. the main process inside the container dying unexpectedly) does trigger an automatic restart.
+- Logs can be inspected via the CLI and optionally saved to a file for later use:
+  ```bash
+  docker compose logs backend > backend-logs.txt
+  ```
+
+## Logs
+
+To view live logs for a specific service:
+
+```bash
+docker compose logs -f backend
+```
+
+To persist the current logs of a container to a file:
+
+```bash
+docker logs <container-name> > my-container-logs.txt
+```
+
+## Known Limitations
+
+- **psycopg2 version pin:** `psycopg2-binary` is pinned to `2.8.6` instead of a newer release. Versions `>= 2.9` introduced a change in how timezone offsets are returned, which is incompatible with this project's older Django version and causes Django admin pages to fail with a database-timezone assertion error at runtime, even though the database itself is correctly configured for UTC.
+- **Legacy dependency versions:** This project intentionally runs on older versions of Python, Django, and related packages to match the original (pre-Docker) codebase. As a result, some dependencies may carry known CVEs. This is a tradeoff made to keep the original application runnable rather than rewriting it against current dependency versions.
+- **Chrome address bar autocomplete on `/admin`:** Typing `/admin` (without a trailing slash) directly into Chrome's address bar can trigger Chrome's own autocomplete behavior before the request is even sent, which may not reflect the server's actual (correct) redirect behavior. This is a browser-specific quirk, not a server misconfiguration — verified via `curl`, the server always returns a relative redirect to `/admin/`. Use the full path with a trailing slash (`/admin/`) to avoid this.
+- **Article deletion returns 405:** Deleting an article (even as its own author) currently returns `405 Method Not Allowed`. This appears to be pre-existing backend behavior unrelated to containerization and is out of scope for this project, which focuses on the Docker/Compose setup rather than application-level bugfixing.
+- **Article deletion returns 405:** Deleting an article (even as its own author) currently returns `405 Method Not Allowed`. This appears to be pre-existing backend behavior unrelated to containerization and is out of scope for this project (which focuses on the Docker/Compose setup, not application-level bugfixing).
 
 > [!CAUTION]
-> `docker compose down -v` also deletes the volumes, including the database. Use it only if you really want to reset all data.
+> As described in [Superuser Creation](#superuser-creation), if `DJANGO_SUPERUSER_PASSWORD` is not set (or too short), Django silently falls back to a hardcoded default password (`securepass`) for any superuser created via `createsuperuser`. Always set this variable explicitly in your `.env`.
 
-### 11. Logs
+## Notable Fixes
 
-> [!NOTE]
-> The **Actions logs** show whether the deployment succeeded. The **container logs** on the VM show whether the application works at runtime (e.g. database errors, CORS errors, crashes).
+A few non-obvious issues were found and fixed while containerizing this project:
 
-#### 11.1 View logs
-
-```bash
-docker compose logs                       # all services
-docker compose logs -f backend            # follow backend logs live
-docker compose logs --tail=100 frontend   # last 100 lines of the frontend
-```
-
-#### 11.2 Save logs to a file
-
-```bash
-docker compose logs --no-color > conduit-logs-$(date +%F).txt
-```
-
-### 12. Rollback
-
-Every build stays in GHCR under its commit SHA. To run an older version:
-
-```bash
-cd ~/conduit
-IMAGE_TAG=<COMMIT_SHA> docker compose pull
-IMAGE_TAG=<COMMIT_SHA> docker compose up -d
-```
-
-> [!TIP]
-> You find the commit SHA of every deployment in the **Actions** tab or with `git log --oneline`.
-
-### 13. Troubleshooting
-
-| Error | Cause | Solution |
-|-------|-------|----------|
-| `Host key verification failed` | `SSH_KNOWN_HOSTS` belongs to another VM or hostname | Run `ssh-keyscan <VM_IP>` again and replace the secret |
-| `Permission denied (publickey,password)` | Private key in the secret does not match the public key on the VM, key has a passphrase, or wrong `SSH_USER` | Store the matching private key without passphrase, check `authorized_keys` of `SSH_USER` |
-| Frontend loads but shows no data | VM IP missing in `DJANGO_ALLOWED_HOSTS` or `CORS_ORIGIN_WHITELIST` | Update `ENV_FILE` and re-run the workflow |
-| `docker: command not found` in deploy job | Docker not installed on the VM | See [2. Prepare the VM](#2-prepare-the-vm) |
-| `/bin/sh^M: not found` in backend container | `entrypoint.sh` saved with Windows line endings (CRLF) | Keep `.gitattributes` (`*.sh text eol=lf`) and re-commit the file |
-| **Run workflow** button missing | Workflow file is not on `main` yet | Merge the workflow into `main` or push to a branch listed in `on.push.branches` |
-
-> [!TIP]
-> After fixing a secret, use **Re-run failed jobs** in the Actions tab. The build job does not need to run again.
-
----
-
-## Security Notes
-
-> [!CAUTION]
-> Never store SSH keys, passwords, tokens, usernames or IP addresses in the repository.
-
-- All sensitive values are GitHub secrets.
-- `.env` is ignored by Git; only `.env.example` with placeholders is committed.
-- The `.env` file on the VM is written with restricted permissions (`umask 077`).
-- Secrets are passed to shell steps via `env:` instead of inline expressions to prevent script injection.
-- The SSH private key is deleted from the runner after every run (`if: always()`).
-- The deploy job only has read permissions for packages; only the build job may push to GHCR.
-- The backend runs as a non-root user, the frontend uses the unprivileged Nginx image.
-
----
-
-## Extras
-
-- Separate Docker networks: the database is only reachable from the backend (`backend-net`).
-- Health checks for the database and the frontend container.
-- Images are tagged with the commit SHA, which allows exact deployments and easy rollbacks.
-- Unused images are removed on the VM after each deployment (`docker image prune -f`).
-- `.gitattributes` enforces LF line endings for shell scripts, so the containers also start correctly when developing on Windows.
+- **Article publishing failed (404):** The frontend sent `POST /articles/` with a trailing slash, but the backend router uses `trailing_slash=False`. Fixed by removing the trailing slash in `articles.service.ts`.
+- **Admin panel redirected to the wrong port:** Behind the reverse proxy, `/admin` (no trailing slash) triggered a 301 redirect using nginx's internal port (`8080`) instead of the public port (`8282`). Fixed with `absolute_redirect off;` in `nginx.conf`, so nginx returns a relative redirect instead.
+- **`entrypoint.sh` had Windows (CRLF) line endings:** Caused the container to fail on startup (`set: Illegal option -`). Fixed with a `.gitattributes` file (`*.sh text eol=lf`) enforcing Unix line endings for shell scripts.
