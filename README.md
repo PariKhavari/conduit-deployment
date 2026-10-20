@@ -50,7 +50,7 @@ The purpose of this repository is to demonstrate how an older, previously non-co
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/<your-username>/conduit-container-v2.git
+git clone https://github.com/PariKhavari/conduit-container-v2.git
 cd conduit-container-v2
 
 # 2. Create your local environment file from the example
