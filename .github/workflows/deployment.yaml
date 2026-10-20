@@ -69,24 +69,36 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up SSH
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add VM to known hosts
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          printf '%s\n' "${SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" >> ~/.ssh/known_hosts
 
-      - name: Copy compose file and .env to VM
+      - name: Create deploy directory on VM
+        run: ssh "${SSH_TARGET}" "mkdir -p ${DEPLOY_DIR}"
+
+      - name: Copy compose file to VM
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          fingerprint: ${{ secrets.SSH_HOST_FINGERPRINT }}
+          source: docker-compose.yaml
+          target: ${{ env.DEPLOY_DIR }}
+
+      - name: Copy .env to VM
         env:
           ENV_FILE: ${{ secrets.ENV_FILE }}
-        run: |
-          ssh -i ~/.ssh/deploy_key "${SSH_TARGET}" "mkdir -p ${DEPLOY_DIR}"
-          scp -i ~/.ssh/deploy_key docker-compose.yaml "${SSH_TARGET}:${DEPLOY_DIR}/docker-compose.yaml"
-          printf '%s\n' "${ENV_FILE}" | ssh -i ~/.ssh/deploy_key "${SSH_TARGET}" "umask 077 && cat > ${DEPLOY_DIR}/.env"
-
+        run: printf '%s\n' "${ENV_FILE}" | ssh "${SSH_TARGET}" "umask 077 && cat > ${DEPLOY_DIR}/.env"
+        
       - name: Pull images and start containers
         env:
           GHCR_USER: ${{ github.actor }}
@@ -102,7 +114,3 @@ jobs:
           docker logout ${REGISTRY}
           docker image prune -f
           EOF
-
-      - name: Remove SSH key from runner
-        if: always()
-        run: rm -f ~/.ssh/deploy_key
