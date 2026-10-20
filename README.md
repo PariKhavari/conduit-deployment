@@ -3,7 +3,7 @@
 Automated CI/CD deployment of the Conduit full-stack application (Django backend, Angular frontend, PostgreSQL) to a remote VM using GitHub Actions, GitHub Container Registry (GHCR) and Docker Compose.
 
 > [!NOTE]
-> This guide covers the automated deployment. For running the containers manually, see [README.md](README.md).
+> This guide covers the automated deployment. For running the containers manually, see [CONTAINER.md](CONTAINER.md).
 
 ## Table of Contents
 

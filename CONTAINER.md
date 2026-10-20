@@ -4,7 +4,7 @@ A fully containerized version of the **Conduit** application (a Medium.com clone
 
 > [!NOTE]
 > This guide describes how to run the Conduit containers manually.
-> For the automated CI/CD deployment via GitHub Actions, see [DEPLOYMENT.md](DEPLOYMENT.md).
+> For the automated CI/CD deployment via GitHub Actions, see [README.md](README.md).
 
 ## Table of Contents
 
