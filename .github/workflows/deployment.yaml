@@ -53,7 +53,7 @@ jobs:
             ${{ env.REGISTRY }}/${{ steps.owner.outputs.ghcr_owner }}/conduit-frontend:${{ github.sha }}
             ${{ env.REGISTRY }}/${{ steps.owner.outputs.ghcr_owner }}/conduit-frontend:latest
 
-  deplpy:
+  deploy:
     name: Deploy to VM
     needs: build
     runs-on: ubuntu-latest
@@ -81,24 +81,14 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${SSH_KNOWN_HOSTS}" >> ~/.ssh/known_hosts
 
-      - name: Create deploy directory on VM
-        run: ssh "${SSH_TARGET}" "mkdir -p ${DEPLOY_DIR}"
-
-      - name: Copy compose file to VM
-        uses: appleboy/scp-action@v1
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          fingerprint: ${{ secrets.SSH_HOST_FINGERPRINT }}
-          source: docker-compose.yaml
-          target: ${{ env.DEPLOY_DIR }}
-
-      - name: Copy .env to VM
+      - name: Copy compose file and .env to VM
         env:
           ENV_FILE: ${{ secrets.ENV_FILE }}
-        run: printf '%s\n' "${ENV_FILE}" | ssh "${SSH_TARGET}" "umask 077 && cat > ${DEPLOY_DIR}/.env"
-        
+        run: |
+          ssh "${SSH_TARGET}" "mkdir -p ${DEPLOY_DIR}"
+          scp docker-compose.yaml "${SSH_TARGET}:${DEPLOY_DIR}/docker-compose.yaml"
+          printf '%s\n' "${ENV_FILE}" | ssh "${SSH_TARGET}" "umask 077 && cat > ${DEPLOY_DIR}/.env"
+
       - name: Pull images and start containers
         env:
           GHCR_USER: ${{ github.actor }}
