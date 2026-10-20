@@ -2,6 +2,10 @@
 
 A fully containerized version of the **Conduit** application (a Medium.com clone), consisting of a Django REST Framework backend and an Angular frontend, orchestrated together with PostgreSQL via Docker Compose.
 
+> [!NOTE]
+> This guide describes how to run the Conduit containers manually.
+> For the automated CI/CD deployment via GitHub Actions, see [DEPLOYMENT.md](DEPLOYMENT.md).
+
 ## Table of Contents
 
 - [Description](#description)
@@ -46,7 +50,7 @@ The purpose of this repository is to demonstrate how an older, previously non-co
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/<your-username>/conduit-container-v2.git
+git clone https://github.com/PariKhavari/conduit-container-v2.git
 cd conduit-container-v2
 
 # 2. Create your local environment file from the example

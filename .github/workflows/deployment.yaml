@@ -1,0 +1,106 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main, feat/ci-cd-pipeline]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  DEPLOY_DIR: conduit
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      owner_lc: ${{ steps.owner.outputs.ghcr_owner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set lowercase GHCR owner
+        id: owner
+        run: echo "ghcr_owner=${GITHUB_REPOSITORY_OWNER,,}" >> "${GITHUB_OUTPUT}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226 # v3.0.0
+
+      - name: Build and push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./conduit-backend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.owner.outputs.ghcr_owner }}/conduit-backend:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ steps.owner.outputs.ghcr_owner }}/conduit-backend:latest
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./conduit-frontend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.owner.outputs.ghcr_owner }}/conduit-frontend:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ steps.owner.outputs.ghcr_owner }}/conduit-frontend:latest
+
+  deploy:
+    name: Deploy to VM
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      SSH_TARGET: ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}
+      GHCR_OWNER: ${{ needs.build.outputs.owner_lc }}
+      IMAGE_TAG: ${{ github.sha }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add VM to known hosts
+        env:
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" >> ~/.ssh/known_hosts
+
+      - name: Copy compose file and .env to VM
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: |
+          ssh "${SSH_TARGET}" "mkdir -p ${DEPLOY_DIR}"
+          scp docker-compose.yaml "${SSH_TARGET}:${DEPLOY_DIR}/docker-compose.yaml"
+          printf '%s\n' "${ENV_FILE}" | ssh "${SSH_TARGET}" "umask 077 && cat > ${DEPLOY_DIR}/.env"
+
+      - name: Pull images and start containers
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ssh -i ~/.ssh/deploy_key "${SSH_TARGET}" bash -s <<EOF
+          set -euo pipefail
+          cd ${DEPLOY_DIR}
+          echo '${GHCR_TOKEN}' | docker login ${REGISTRY} -u '${GHCR_USER}' --password-stdin
+          export GHCR_OWNER='${GHCR_OWNER}' IMAGE_TAG='${IMAGE_TAG}'
+          docker compose pull
+          docker compose up -d --remove-orphans
+          docker logout ${REGISTRY}
+          docker image prune -f
+          EOF
